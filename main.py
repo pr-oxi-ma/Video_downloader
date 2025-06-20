@@ -1,4 +1,6 @@
-import json
+import os
+import base64
+import tempfile
 from flask import Flask, request, jsonify
 import yt_dlp
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -8,9 +10,10 @@ app.wsgi_app = ProxyFix(app.wsgi_app)
 
 @app.route('/')
 def home():
+    domain = request.host_url.rstrip('/')  # Dynamically get current domain
     return jsonify({
         "message": "📥 Social Media Downloader API (Vercel)",
-        "usage": "https://video-downloader-weld-five.vercel.app/api?url=https://example.com/video",
+        "usage": f"{domain}/api?url=https://example.com/video",
         "powered_by": "yt-dlp",
         "credits": {
             "telegram": "@Kaiiddo",
@@ -34,6 +37,8 @@ def download():
         }), 400
 
     try:
+        # Load cookies from environment variable (supports base64 or raw text)
+        cookies_env = os.getenv('COOKIES_TXT')
         ydl_opts = {
             'quiet': True,
             'skip_download': True,
@@ -41,8 +46,25 @@ def download():
             'nocheckcertificate': True,
         }
 
+        if cookies_env:
+            try:
+                # Try decoding as base64 (common for binary files)
+                cookies_decoded = base64.b64decode(cookies_env).decode('utf-8')
+            except:
+                cookies_decoded = cookies_env  # Fallback to raw text
+            
+            # Save to a temporary file
+            with tempfile.NamedTemporaryFile(mode='w+', suffix='.txt', delete=False) as f:
+                f.write(cookies_decoded)
+                cookies_path = f.name
+            ydl_opts['cookiefile'] = cookies_path
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
+
+        # Clean up cookies file if it exists
+        if cookies_env and 'cookies_path' in locals() and os.path.exists(cookies_path):
+            os.unlink(cookies_path)
 
         data = {
             "id": info.get("id"),
@@ -68,7 +90,7 @@ def download():
         return jsonify({
             "status": "error",
             "message": str(e),
-            "note": "Some platforms like TikTok or Drive may block or rate-limit. Try using a proxy or check if login is required.",
+            "note": "Some platforms may block requests. Ensure cookies are valid if used.",
             "credits": {
                 "telegram": "@Kaiiddo",
                 "youtube": "@Kaiiddo",
@@ -76,19 +98,9 @@ def download():
             }
         }), 500
 
-# This is required for Vercel to work with Flask
+# Vercel serverless compatibility
 def vercel_handler(event, context):
-    from werkzeug.wrappers import Request, Response
     from werkzeug.serving import run_simple
-
     def wsgi_app(environ, start_response):
         return app(environ, start_response)
-
-    return run_simple(
-        '0.0.0.0',
-        5000,
-        wsgi_app,
-        use_reloader=False,
-        use_debugger=False,
-        use_evalex=False
-    )
+    return run_simple('0.0.0.0', 5000, wsgi_app, use_reloader=False)
