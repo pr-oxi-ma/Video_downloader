@@ -10,7 +10,7 @@ app.wsgi_app = ProxyFix(app.wsgi_app)
 def home():
     return jsonify({
         "message": "📥 Social Media Downloader API (Vercel)",
-        "usage": "https://your-vercel-app.vercel.app/api?url=https://example.com/video",
+        "usage": "https://video-downloader-weld-five.vercel.app/api?url=https://example.com/video",
         "powered_by": "yt-dlp",
         "credits": {
             "telegram": "@Kaiiddo",
