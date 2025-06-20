@@ -8,48 +8,6 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app)
 
-def merge_video_audio(info):
-    """Ensure all formats have both video and audio"""
-    merged_formats = []
-    video_formats = [f for f in info.get('formats', []) if f.get('vcodec') != 'none']
-    audio_formats = [f for f in info.get('formats', []) if f.get('acodec') != 'none']
-    
-    for v_format in video_formats:
-        # Skip if already has audio
-        if v_format.get('acodec') != 'none':
-            merged_formats.append(v_format)
-            continue
-            
-        # Find compatible audio format
-        best_audio = None
-        for a_format in audio_formats:
-            # Match by extension/container when possible
-            if (a_format.get('ext') == v_format.get('ext') or 
-                (a_format.get('container') == v_format.get('container'))):
-                best_audio = a_format
-                break
-                
-        if not best_audio:
-            # Fallback to any audio format
-            best_audio = audio_formats[0] if audio_formats else None
-            
-        if best_audio:
-            # Create merged format entry
-            merged = {
-                **v_format,
-                'acodec': best_audio['acodec'],
-                'audio_ext': best_audio.get('audio_ext', best_audio.get('ext')),
-                'url': f"{v_format['url']}+{best_audio['url']}",
-                'format_note': f"{v_format.get('format_note', '')}+audio",
-                'format': f"{v_format.get('format', '')}+{best_audio.get('format', '')}",
-                'filesize_approx': (v_format.get('filesize_approx', 0) + 
-                                   best_audio.get('filesize_approx', 0)),
-                'requested_formats': [v_format, best_audio]
-            }
-            merged_formats.append(merged)
-            
-    return merged_formats
-
 @app.route('/')
 def home():
     domain = request.host_url.rstrip('/')
@@ -85,7 +43,6 @@ def download():
             'skip_download': True,
             'forcejson': True,
             'nocheckcertificate': True,
-            'extract_flat': False,
         }
 
         if cookies_env:
@@ -93,7 +50,7 @@ def download():
                 cookies_decoded = base64.b64decode(cookies_env).decode('utf-8')
             except:
                 cookies_decoded = cookies_env
-            
+
             with tempfile.NamedTemporaryFile(mode='w+', suffix='.txt', delete=False) as f:
                 f.write(cookies_decoded)
                 cookies_path = f.name
@@ -105,8 +62,37 @@ def download():
         if cookies_env and 'cookies_path' in locals() and os.path.exists(cookies_path):
             os.unlink(cookies_path)
 
-        # Process formats to ensure all have audio
-        merged_formats = merge_video_audio(info)
+        # Extract video-only formats
+        video_formats = [
+            f for f in info.get("formats", [])
+            if f.get("vcodec") != "none" and f.get("acodec") == "none"
+        ]
+
+        # Extract audio-only formats
+        audio_formats = [
+            f for f in info.get("formats", [])
+            if f.get("vcodec") == "none" and f.get("acodec") != "none"
+        ]
+
+        # Pick best audio format (by bitrate)
+        best_audio = sorted(audio_formats, key=lambda x: x.get("abr", 0), reverse=True)[0] if audio_formats else None
+
+        # Combine video+best audio
+        merged_formats = []
+        if best_audio:
+            for vf in video_formats:
+                merged_formats.append({
+                    "format_id": f"{vf.get('format_id')}+{best_audio.get('format_id')}",
+                    "ext": vf.get("ext"),
+                    "height": vf.get("height"),
+                    "width": vf.get("width"),
+                    "fps": vf.get("fps"),
+                    "video_note": vf.get("format_note"),
+                    "video_url": vf.get("url"),
+                    "audio_url": best_audio.get("url"),
+                    "audio_ext": best_audio.get("ext"),
+                    "note": "Merged video+audio stream (playback or merge supported)"
+                })
 
         data = {
             "id": info.get("id"),
@@ -118,6 +104,13 @@ def download():
             "view_count": info.get("view_count"),
             "webpage_url": info.get("webpage_url"),
             "formats": merged_formats,
+            "audio_only": {
+                "format_id": best_audio.get("format_id"),
+                "ext": best_audio.get("ext"),
+                "abr": best_audio.get("abr"),
+                "filesize": best_audio.get("filesize"),
+                "url": best_audio.get("url")
+            } if best_audio else None,
             "thumbnails": info.get("thumbnails", []),
             "credits": {
                 "telegram": "@Kaiiddo",
@@ -140,8 +133,10 @@ def download():
             }
         }), 500
 
+# For Vercel serverless
 def vercel_handler(event, context):
     from werkzeug.serving import run_simple
     def wsgi_app(environ, start_response):
         return app(environ, start_response)
     return run_simple('0.0.0.0', 5000, wsgi_app, use_reloader=False)
+                
